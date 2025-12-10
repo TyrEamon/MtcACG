@@ -12,6 +12,7 @@ import aiohttp
 import boto3
 
 # === 环境变量配置 ===
+# 必须配置
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID")) 
 
@@ -52,10 +53,12 @@ async def upload_to_channel(file_source, caption=""):
     try:
         # 如果是 BytesIO (内存文件)
         if hasattr(file_source, 'read'):
+            # 重新定位到开头
+            file_source.seek(0)
             msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=file_source, caption=caption)
             return msg.photo[-1].file_id
         
-        # 如果是 URL (仅当确定文件很小且直链可访问时才用，一般建议用上面的流式上传)
+        # 如果是 URL (仅当确定文件很小且直链可访问时才用)
         elif isinstance(file_source, str) and file_source.startswith("http"):
             msg = await bot.send_photo(chat_id=CHANNEL_ID, photo=file_source, caption=caption)
             return msg.photo[-1].file_id
