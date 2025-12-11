@@ -4,3 +4,4 @@ boto3
 python-dotenv
 pixivpy3
 schedule
+Pillow
