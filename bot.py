@@ -263,57 +263,59 @@ async def fetch_pixiv():
 async def fetch_manyacg():
     logger.info("🎲 抽取 ManyACG 随机图...")
     url = "https://manyacg.top/api/v1/artwork/random"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0"}
     
     has_new_images = False
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            # 这里的 headers 很重要，伪装成浏览器
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0"}
+    async with aiohttp.ClientSession() as session:
+        # 🔴 循环 5 次，每次抽 1 张，总共 5 张
+        for _ in range(5):
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200: continue  # 注意这里改成 continue，不要 return
+                    res_json = await resp.json()
+                    
+                    # API 返回的是个列表，通常只有一个元素
+                    for item in res_json.get('data', []):
+                        # --- 1. ID 构造 ---
+                        many_id = item['id']
+                        id_key = f"manyacg_{many_id}"
+                        
+                        # --- 2. 去重检查 ---
+                        if id_key in sent_illust_ids:
+                            logger.info(f"⏭️ ManyACG {many_id} 以前发过，跳过。")
+                            continue
+                        
+                        # --- 3. 解析字段 ---
+                        title = item.get('title', '无题')
+                        author = item.get('artist', {}).get('name', 'Unknown')
+                        
+                        # 标签处理
+                        tags_list = item.get('tags', [])
+                        if item.get('r18', False):
+                            tags_list.append("R-18")
+                        tags_str = " ".join(tags_list)
+                        
+                        # 图片 URL
+                        if not item.get('pictures'): continue
+                        img_url = item['pictures'][0]['regular']
+                        
+                        caption = f"ManyACG: {title}\nArtist: {author}\nTags: #{tags_str.replace(' ', ' #')}"
+                        
+                        # --- 4. 下载并发送 ---
+                        async with session.get(img_url) as img_r:
+                            if img_r.status == 200:
+                                await process_image(await img_r.read(), id_key, tags_str, caption, "manyacg")
+                                sent_illust_ids.add(id_key)
+                                has_new_images = True
+                        
+                        await asyncio.sleep(2)
             
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200: return
-                res_json = await resp.json()
-                
-                # API 返回的是个列表，通常只有一个元素
-                for item in res_json.get('data', []):
-                    # --- 1. ID 构造 ---
-                    many_id = item['id']
-                    id_key = f"manyacg_{many_id}"
-                    
-                    # --- 2. 去重检查 ---
-                    if id_key in sent_illust_ids:
-                        logger.info(f"⏭️ ManyACG {many_id} 以前发过，跳过。")
-                        continue
-                    
-                    # --- 3. 解析字段 ---
-                    title = item.get('title', '无题')
-                    author = item.get('artist', {}).get('name', 'Unknown')
-                    
-                    # 标签处理
-                    tags_list = item.get('tags', [])
-                    if item.get('r18', False):
-                        tags_list.append("R-18")
-                    tags_str = " ".join(tags_list)
-                    
-                    # 图片 URL (取第一张图的 regular 高清版)
-                    # 如果有多张图，这里暂时只取第一张，也可以循环 pictures 列表
-                    if not item.get('pictures'): continue
-                    img_url = item['pictures'][0]['regular']
-                    
-                    caption = f"ManyACG: {title}\nArtist: {author}\nTags: #{tags_str.replace(' ', ' #')}"
-                    
-                    # --- 4. 下载并发送 ---
-                    async with session.get(img_url) as img_r:
-                        if img_r.status == 200:
-                            await process_image(await img_r.read(), id_key, tags_str, caption, "manyacg")
-                            sent_illust_ids.add(id_key)
-                            has_new_images = True
-                    
-                    await asyncio.sleep(2)
-
-    except Exception as e:
-        logger.error(f"ManyACG 爬虫出错: {e}")
+            except Exception as e:
+                logger.error(f"ManyACG 爬虫出错: {e}")
+            
+            # 每抽完一张，礼貌地等 1 秒再抽下一张
+            await asyncio.sleep(1)
 
     if has_new_images:
         await push_history_to_cloud()
