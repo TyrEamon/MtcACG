@@ -128,7 +128,7 @@ async def process_image(img_bytes, post_id, tags, caption, source):
             logger.info(f"⚠️ 图片过大 ({len(img_bytes)/1024/1024:.2f}MB)，正在压缩...")
             with Image.open(io.BytesIO(img_bytes)) as img:
                 if img.mode != 'RGB': img = img.convert('RGB')
-                quality = 90
+                quality = 95
                 while True:
                     output_buffer = io.BytesIO()
                     img.save(output_buffer, format='JPEG', quality=quality)
