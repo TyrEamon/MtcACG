@@ -1,7 +1,7 @@
 # 🌸 MtcACG - Personal ACG Gallery Ecosystem
 
 <div align="center">
-  <img src="https://user-gen-media-assets.s3.amazonaws.com/gemini_images/a5c4d47b-9175-4795-b89e-2158c2db88c9.png" width="120" alt="MtcACG Logo">
+  <img src="https://pub-d07d03b8c35d40309ce9c6d8216e885b.r2.dev/ACG.png" width="120" alt="MtcACG Logo">
   <br>
   <h3>采集 · 整理 · 展示</h3>
   <p>一个基于 Cloudflare Workers 和 Telegram Bot 的二次元插画聚合与展示平台。</p>
