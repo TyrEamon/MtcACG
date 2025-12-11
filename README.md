@@ -9,11 +9,9 @@
 <div align="center">
   <table>
     <tr>
-      <!-- 📱 左侧：手机端截图 (占宽 30%) -->
       <td width="30%" align="center" valign="top">
         <img src="https://pub-d07d03b8c35d40309ce9c6d8216e885b.r2.dev/phone.jpg" alt="Mobile View" width="100%" style="border-radius: 10px;">
       </td>
-      <!-- 💻 右侧：电脑端截图 (占宽 70%) -->
       <td width="70%" align="center" valign="top">
         <img src="https://pub-d07d03b8c35d40309ce9c6d8216e885b.r2.dev/1765473925321.png" alt="Desktop Home" width="100%" style="border-radius: 10px; margin-bottom: 10px;">
         <img src="https://pub-d07d03b8c35d40309ce9c6d8216e885b.r2.dev/1765474149513.png" alt="Desktop Detail" width="100%" style="border-radius: 10px; margin-bottom: 10px;">
@@ -28,13 +26,13 @@
 
 **MtcACG** 是一个围绕“收集、整理与展示二次元插画”打造的私有化生态系统。
 
-不同于无差别的全网爬虫，MtcACG 旨在构建一个“有温度”的数字画廊。它通过 Telegram Bot 从 Pixiv、Yande、ManyACG 等高质量源头采集图片，自动处理去重、压缩与存储，最终通过 Cloudflare Workers 构建的现代化前端进行优雅展示。
+不同于无差别的全网爬虫，MtcACG 旨在构建一个“有温度”的数字画廊。它通过 Telegram Bot 从 Pixiv、Yande等高质量源头采集图片，自动处理去重、压缩与存储，最终通过 Cloudflare Workers 构建的现代化前端进行优雅展示。
 
 既是你的个人图床，也是对外分享的精美图站。
 
 ### ✨ 核心特性
 
-*   **多源采集**: 支持 Pixiv (Cookie模式/去重)、Yande、ManyACG 随机接口等多源抓取。
+*   **多源采集**: 支持 Pixiv (Cookie模式/去重)、Yande等多源抓取。
 *   **智能处理**: 自动识别 R-18 内容打标，超大图片自动压缩至 Telegram 限制范围内。
 *   **云端记忆**: Bot 与 Worker 联动，通过 API 维护已发送图库，杜绝重复采集。
 *   **无服务器架构**: 前端与 API 完全基于 Cloudflare Workers + D1 数据库，低成本、高并发。
