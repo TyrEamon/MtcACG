@@ -1,28 +1,55 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const path = url.pathname;
 
-    // 1. 图片代理
-    if (url.pathname.startsWith('/image/')) {
-      const fileId = url.pathname.split('/')[2];
-      return proxyTelegramImage(fileId, env.BOT_TOKEN);
+    // ==========================================
+    // 🧠 新增：云端记忆 API (供 Python Bot 使用)
+    // ==========================================
+    
+    // API: 获取历史记录
+    if (path === '/api/get_history') {
+      const history = await env.KV.get('pixiv_history');
+      return new Response(history || '');
     }
 
-    // 2. API (搜索/列表)
-    if (url.pathname === '/api/posts') {
+    // API: 更新历史记录
+    if (path === '/api/update_history') {
+      if (request.method !== 'POST') return new Response('Method not allowed', {status: 405});
+      const newHistory = await request.text();
+      await env.KV.put('pixiv_history', newHistory);
+      return new Response('OK');
+    }
+    // ==========================================
+
+    if (path.startsWith('/image/')) {
+      const fileId = path.replace('/image/', '');
+      return await proxyTelegramImage(fileId, env.BOT_TOKEN);
+    }
+
+    if (path === '/api/posts') {
       const q = url.searchParams.get('q');
       const offset = url.searchParams.get('offset') || 0;
-      let sql = q 
-        ? `SELECT * FROM posts WHERE title LIKE ? OR author LIKE ? OR tags LIKE ? ORDER BY timestamp DESC LIMIT 20 OFFSET ?`
-        : `SELECT * FROM posts ORDER BY timestamp DESC LIMIT 20 OFFSET ?`;
-      const params = q ? [`%${q}%`, `%${q}%`, `%${q}%`, offset] : [offset];
+      if (q === 'random') {
+        const { results } = await env.DB.prepare("SELECT * FROM images ORDER BY RANDOM() LIMIT 1").all();
+        return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' }});
+      }
       
-      const { results } = await env.DB.prepare(sql).bind(...params).all();
-      return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' }});
+      let sql = q 
+        ? `SELECT * FROM images WHERE tags LIKE ? OR caption LIKE ? ORDER BY created_at DESC LIMIT 20 OFFSET ?`
+        : `SELECT * FROM images ORDER BY created_at DESC LIMIT 20 OFFSET ?`;
+      const params = q ? [`%${q}%`, `%${q}%`, offset] : [offset];
+      
+      try {
+        const { results } = await env.DB.prepare(sql).bind(...params).all();
+        return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' }});
+      } catch (e) { return new Response(JSON.stringify([]), {status: 500}); }
     }
 
-    // 3. 前端 HTML
-    return new Response(htmlTemplate(), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
+    if (path.match(/^\/detail\/(.+)$/)) return await handleDetail(path.match(/^\/detail\/(.+)$/)[1], env);
+    if (path === '/about') return new Response(htmlAbout(), {headers: {'Content-Type': 'text/html'}});
+    
+    return new Response(htmlHome(), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
   }
 };
 
@@ -30,53 +57,352 @@ async function proxyTelegramImage(fileId, botToken) {
   try {
     const r1 = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
     const j1 = await r1.json();
-    if (!j1.ok) return new Response('TG Error', { status: 502 });
+    if (!j1.ok) return new Response('404', {status: 404});
     const r2 = await fetch(`https://api.telegram.org/file/bot${botToken}/${j1.result.file_path}`);
     const h = new Headers(r2.headers);
-    h.set('Cache-Control', 'public, max-age=31536000'); // 缓存1年
+    h.set('Cache-Control', 'public, max-age=31536000, immutable');
+    h.set('Access-Control-Allow-Origin', '*');
     return new Response(r2.body, { headers: h });
-  } catch (e) { return new Response('Proxy Error', { status: 500 }); }
+  } catch { return new Response('Error', {status: 500}); }
 }
 
-function htmlTemplate() {
+const SIDEBAR_HTML = `
+  <div id="overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden transition-opacity opacity-0" style="will-change: opacity;"></div>
+  <aside id="sidebar" class="fixed top-0 left-0 w-72 h-full bg-[#1a1a1a]/95 backdrop-blur-xl border-r border-white/10 z-50 transform -translate-x-full transition-transform duration-300 ease-out shadow-2xl flex flex-col" style="will-change: transform;">
+    <div class="p-6 border-b border-white/10 flex items-center justify-between">
+      <h2 class="text-2xl font-bold bg-gradient-to-r from-pink-500 to-purple-500 bg-clip-text text-transparent">MtcACG</h2>
+      <button onclick="toggleSidebar()" class="text-gray-400 hover:text-white">✕</button>
+    </div>
+    <nav class="flex-1 p-4 space-y-2">
+      <a href="/" class="flex items-center p-3 text-gray-300 hover:bg-white/10 rounded-lg transition">
+        <span class="mr-3">🏠</span> Home
+      </a>
+      <a href="#" onclick="randomImage()" class="flex items-center p-3 text-gray-300 hover:bg-white/10 rounded-lg transition">
+        <span class="mr-3">🎲</span> Random Pick
+      </a>
+      <a href="/about" class="flex items-center p-3 text-gray-300 hover:bg-white/10 rounded-lg transition">
+        <span class="mr-3">ℹ️</span> About
+      </a>
+      <div class="pt-4 mt-4 border-t border-white/10">
+        <div class="flex items-center justify-between p-3">
+          <span class="text-gray-300 flex items-center"><span class="mr-3">🔞</span> R-18 Filter</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="r18-toggle" class="sr-only peer" onchange="toggleR18(this)">
+            <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-600"></div>
+          </label>
+        </div>
+      </div>
+      <div class="pt-4 mt-4 border-t border-white/10">
+        <p class="px-3 text-xs font-bold text-gray-500 uppercase mb-2">Friends</p>
+        <a href="https://github.com" target="_blank" class="flex items-center p-3 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg text-sm">
+           🔗 GitHub
+        </a>
+      </div>
+    </nav>
+    <div class="p-4 text-xs text-center text-gray-600 border-t border-white/5">
+      © 2025 MtcACG Gallery
+    </div>
+  </aside>
+  <script>
+    function toggleSidebar() {
+      const sb = document.getElementById('sidebar');
+      const ov = document.getElementById('overlay');
+      const isOpen = !sb.classList.contains('-translate-x-full');
+      if (isOpen) {
+        sb.classList.add('-translate-x-full');
+        ov.classList.remove('opacity-100');
+        setTimeout(() => ov.classList.add('hidden'), 300);
+      } else {
+        ov.classList.remove('hidden');
+        void ov.offsetWidth; 
+        ov.classList.add('opacity-100');
+        sb.classList.remove('-translate-x-full');
+      }
+    }
+    async function randomImage() {
+      toggleSidebar();
+      const res = await fetch('/api/posts?q=random');
+      const data = await res.json();
+      if(data.length) window.location.href = '/detail/' + data[0].id;
+    }
+    function toggleR18(el) {
+      localStorage.setItem('hide_r18', el.checked);
+      location.reload(); 
+    }
+    if(localStorage.getItem('hide_r18') === 'true') document.getElementById('r18-toggle').checked = true;
+  </script>
+`;
+
+async function handleDetail(id, env) {
+  const img = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first();
+  if (!img) return new Response("404", { status: 404 });
+
+  const { results: related } = await env.DB.prepare("SELECT * FROM images WHERE id != ? ORDER BY RANDOM() LIMIT 4").bind(id).all();
+  const imageUrl = `/image/${img.file_name}`; 
+  const title = (img.caption || 'Untitled').split('\n')[0];
+  const tagsHtml = (img.tags || '').split(' ').map(t => `<a href="/?q=${t}" class="tag-pill">#${t}</a>`).join(' ');
+
+  return new Response(`
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} - MtcACG</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .tag-pill { background: rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 20px; font-size: 12px; color: #f9a8d4; transition: all 0.2s; }
+  .tag-pill:hover { background: #ec4899; color: white; }
+  .bg-dynamic { 
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    z-index: -1; background-image: url('${imageUrl}'); background-size: cover; background-position: center; 
+    filter: blur(5px) brightness(0.6); transform: scale(1.1) translateZ(0); 
+    will-change: transform; pointer-events: none;
+  }
+</style>
+</head>
+<body class="text-gray-100 min-h-screen font-sans overflow-x-hidden">
+  <div class="bg-dynamic"></div>
+  ${SIDEBAR_HTML}
+  <div class="container mx-auto px-4 py-6 max-w-6xl relative z-10">
+    <div class="flex items-center justify-between mb-8">
+      <button onclick="toggleSidebar()" class="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-lg">
+        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+      </button>
+      <a href="/" class="text-xl font-bold tracking-widest text-white/90">MtcACG</a>
+      <div class="w-8"></div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div class="lg:col-span-2 bg-black/40 backdrop-blur-md rounded-2xl overflow-hidden border border-white/10 shadow-2xl flex items-center justify-center p-2">
+    <img src="${imageUrl}" class="max-h-[85vh] w-auto object-contain rounded-lg">
+  </div>   
+      <div class="lg:col-span-1 space-y-6">
+        <div class="bg-black/40 backdrop-blur-md rounded-2xl p-8 border border-white/10">
+          <h1 class="text-2xl font-bold text-white mb-2 leading-snug shadow-black drop-shadow-lg">${title}</h1>
+          <div class="text-sm text-gray-400 font-mono mb-6">ID: ${img.id}</div>
+          <div class="flex flex-wrap gap-2 mb-8">${tagsHtml}</div>
+          <a href="${imageUrl}" download class="block w-full py-3 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white text-center font-bold rounded-xl shadow-lg transform hover:-translate-y-0.5 transition-all">Download Original</a>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+           ${related.map(r => `
+              <a href="/detail/${r.id}" class="block aspect-square rounded-xl overflow-hidden border border-white/10 hover:border-pink-500 transition-all relative group">
+                <img src="/image/${r.file_name}" class="w-full h-full object-cover">
+                <div class="absolute inset-0 bg-black/20 group-hover:bg-transparent transition-colors"></div>
+              </a>
+            `).join('')}
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+  `, { headers: { "Content-Type": "text/html" } });
+}
+
+function htmlHome() {
   return `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gallery</title>
+<title>MtcACG</title>
 <style>
-body{background:#121212;color:#eee;margin:0;font-family:sans-serif}
-.search{position:sticky;top:0;background:#121212;padding:15px;text-align:center;z-index:9}
-input{background:#333;border:none;padding:12px;border-radius:20px;width:80%;color:#fff}
-.grid{column-count:2;gap:10px;padding:10px}
-@media(min-width:768px){.grid{column-count:4}}
-.card{break-inside:avoid;background:#1e1e1e;margin-bottom:10px;border-radius:8px;overflow:hidden}
-img{width:100%;display:block;min-height:150px;background:#222}
-.meta{padding:8px}
-.title{font-size:13px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.author{font-size:12px;color:#888}
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; overflow-x: hidden; }
+
+/* --- 性能优化版 CSS --- */
+
+#bg-layer { 
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: -1; 
+  background-size: cover; background-position: center; 
+  /* 优化1：模糊度调低，减轻显卡负担 */
+  filter: blur(15px) brightness(0.5); 
+  transition: opacity 1s; opacity: 0; 
+  /* 开启硬件加速 */
+  transform: translate3d(0,0,0); 
+  will-change: opacity; 
+  pointer-events: none;
+}
+
+.card { 
+  break-inside: avoid; 
+  margin-bottom: 12px;   
+  border-radius: 12px;   
+  overflow: hidden; 
+  background: #2a2a2a; 
+  display: inline-block; 
+  width: 100%; 
+  position: relative; 
+  transition: transform 0.2s ease-out; /* 动画时间改短一点更跟手 */
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3); 
+  
+  /* 优化3：提示浏览器优化渲染 */
+  will-change: transform;
+}
+
+.header { position: sticky; top: 0; z-index: 30; background: rgba(0,0,0,0.3); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; }
+.logo { font-weight: 800; font-size: 18px; letter-spacing: 1px; color: #fff; text-decoration: none; }
+.search-bar { flex: 1; max-width: 400px; margin: 0 16px; position: relative; }
+input { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); color: white; padding: 8px 16px; border-radius: 99px; width: 100%; outline: none; transition: 0.3s; font-size: 14px; }
+input:focus { background: rgba(0,0,0,0.6); border-color: #ec4899; }
+
+/* ========================================= */
+/* 📱 手机端：原生瀑布流 (最适合手机) */
+/* ========================================= */
+.gallery-container {
+  display: block;
+  column-count: 2;
+  column-gap: 8px;
+  padding: 8px;
+}
+
+.card {
+  break-inside: avoid;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #2a2a2a;
+  position: relative;
+  transition: transform 0.2s;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+.card:active { transform: scale(0.98); }
+.card:hover { transform: scale(1.02) translateY(-5px); z-index: 20; box-shadow: 0 25px 30px -10px rgba(0,0,0,0.6); }
+
+.card img {
+  width: 100%;
+  height: auto; /* 手机端自适应高度 */
+  display: block;
+  background: #222;
+  transition: opacity 0.3s;
+}
+
+/* ========================================= */
+/* 💻 电脑端 (宽于 768px)：启用错落砖墙布局 */
+/* ========================================= */
+@media(min-width: 768px) {
+  .gallery-container {
+    display: grid;
+    /* 基础格子宽约 250px，自动填充 */
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    grid-auto-rows: 250px;
+    grid-auto-flow: dense; /* 自动填补空隙 */
+    gap: 16px;
+    padding: 20px;
+    max-width: 1800px;
+    margin: 0 auto;
+    
+    /* 重置瀑布流属性 */
+    column-count: auto;
+    width: auto;
+  }
+
+  .card {
+    margin-bottom: 0;
+    grid-column: span 1;
+    grid-row: span 1;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+  }
+
+  /* --- 🎲 魔法：让电脑端图片有大有小 --- */
+  /* 每 5 张出现一个大方块 (2x2) */
+  .card:nth-child(5n) { grid-column: span 2; grid-row: span 2; }
+  
+  /* 每 7 张出现一个横条 (2x1) */
+  .card:nth-child(7n) { grid-column: span 2; }
+  
+  /* 每 9 张出现一个竖条 (1x2) */
+  .card:nth-child(9n) { grid-row: span 2; }
+
+  .card img {
+    height: 100%;
+    object-fit: cover; /* 电脑端必须裁剪，否则对不齐 */
+  }
+}
+
+.meta { position: absolute; bottom: 0; left: 0; right: 0; padding: 40px 10px 10px; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); opacity: 0; transition: 0.2s; }
+.card:hover .meta { opacity: 1; }
+
+/* 手机端：为了不遮挡小图，默认隐藏标题，只有点击进去才看标题，或者只显示一点点 */
+@media(max-width: 768px) {
+  .meta { padding: 20px 8px 8px; opacity: 1; } /* 手机端常驻显示标题背景 */
+  .title { font-size: 11px; }
+  .card { margin-bottom: 8px; border-radius: 8px; } /* 手机端卡片更紧凑 */
+}
+
+.title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px black; }
+.menu-btn { cursor: pointer; padding: 6px; }
 </style>
+<script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
-<div class="search"><input type="text" placeholder="Search..." onchange="search(this.value)"></div>
-<div class="grid" id="g"></div>
+<div id="bg-layer"></div>
+${SIDEBAR_HTML}
+<div class="header">
+  <div class="menu-btn" onclick="toggleSidebar()">
+    <svg width="24" height="24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+  </div>
+  <div class="search-bar"><input type="text" id="search" placeholder="Search..." onchange="doSearch(this.value)"></div>
+  <a href="/" class="logo">MtcACG</a>
+</div>
+<!-- 📱手机瀑布流 + 💻电脑砖墙 -->
+<div class="gallery-container" id="g"></div>
+<div id="status" class="text-center py-10 text-gray-500 text-sm">Loading...</div>
 <script>
-let off=0,q='',loading=false;
-async function load(reset=false){
-  if(loading)return;loading=true;
-  if(reset){document.getElementById('g').innerHTML='';off=0;}
-  let res=await fetch(\`/api/posts?q=\${encodeURIComponent(q)}&offset=\${off}\`);
-  let data=await res.json();
-  let html=data.map(p=>{
-    let imgs=JSON.parse(p.images);
-    return \`<div class="card"><img src="/image/\${imgs[0]}" loading="lazy"><div class="meta"><div class="title">\${p.title}</div><div class="author">\${p.author}</div></div></div>\`
-  }).join('');
-  document.getElementById('g').insertAdjacentHTML('beforeend',html);
-  off+=20;loading=false;
+let offset = 0; let q = ''; let isLoading = false;
+const hideR18 = localStorage.getItem('hide_r18') === 'true';
+
+async function load(reset = false) {
+  if (isLoading) return;
+  isLoading = true;
+  if(reset) { document.getElementById('g').innerHTML=''; offset=0; }
+  try {
+    const url = \`/api/posts?offset=\${offset}&q=\${encodeURIComponent(q)}\`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.length === 0 && offset === 0) { document.getElementById('status').innerText = 'Nothing here...'; return; }
+    if (offset === 0 && data.length > 0) {
+      const bg = document.getElementById('bg-layer');
+      bg.style.backgroundImage = \`url(/image/\${data[0].file_name})\`;
+      bg.style.opacity = 1;
+    }
+    let html = '';
+    data.forEach(item => {
+      if (hideR18 && (item.tags||'').includes('R-18')) return;
+      const title = (item.caption || '').split('\\n')[0];
+      html += \`
+        <a href="/detail/\${item.id}" class="card">
+          <img src="/image/\${item.file_name}" loading="lazy" onload="this.style.background='transparent'">
+          <div class="meta"><div class="title">\${title}</div></div>
+        </a>\`;
+    });
+    document.getElementById('g').insertAdjacentHTML('beforeend', html);
+    offset += data.length;
+    if(data.length === 0) document.getElementById('status').innerText = 'No more images';
+    else document.getElementById('status').style.display = 'none';
+  } catch(e) { console.error(e); }
+  isLoading = false;
 }
-function search(val){q=val;load(true);}
-window.onscroll=()=>{if(window.innerHeight+scrollY>=document.body.offsetHeight-500)load()};
+function doSearch(val) { q = val; load(true); }
+window.onscroll = () => { if ((window.innerHeight + scrollY) >= document.body.offsetHeight - 1000) load(); };
 load();
-</script></body></html>`;
+</script>
+</body>
+</html>`;
+}
+
+function htmlAbout() {
+    return `
+    <!DOCTYPE html>
+    <html class="dark">
+    <head><meta name="viewport" content="width=device-width"><script src="https://cdn.tailwindcss.com"></script></head>
+    <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+      ${SIDEBAR_HTML}
+      <div class="max-w-md w-full bg-gray-800 p-8 rounded-2xl shadow-2xl text-center relative border border-gray-700">
+         <button onclick="toggleSidebar()" class="absolute top-4 left-4 text-gray-400">☰</button>
+         <h1 class="text-3xl font-bold bg-gradient-to-r from-pink-500 to-purple-500 bg-clip-text text-transparent mb-4">MtcACG</h1>
+         <p class="text-gray-300 mb-6">A personal gallery collection.</p>
+         <a href="/" class="mt-8 inline-block px-6 py-2 bg-gray-700 hover:bg-gray-600 rounded-full transition">Back Home</a>
+      </div>
+    </body>
+    </html>`;
 }
